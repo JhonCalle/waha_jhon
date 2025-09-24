@@ -92,7 +92,12 @@ import {
   WAHASessionStatus,
   WAMessageAck,
 } from '@waha/structures/enums.dto';
-import { BinaryFile, RemoteFile } from '@waha/structures/files.dto';
+import {
+  BinaryFile,
+  RemoteFile,
+  VoiceBinaryFile,
+  VoiceRemoteFile,
+} from '@waha/structures/files.dto';
 import {
   CreateGroupRequest,
   GroupSortField,
@@ -152,6 +157,12 @@ import {
   isJidStatusBroadcast,
   toCusFormat,
 } from '@waha/core/utils/jids';
+
+type UploadableMedia =
+  | BinaryFile
+  | RemoteFile
+  | VoiceBinaryFile
+  | VoiceRemoteFile;
 
 export interface WebJSConfig {
   webVersion?: string;
@@ -696,20 +707,107 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
     );
   }
 
-  sendImage(request: MessageImageRequest) {
-    throw new AvailableInPlusVersion();
+  async sendImage(request: MessageImageRequest) {
+    const media = await this.buildMessageMedia(request.file);
+    const options = {
+      ...this.getMessageOptions(request),
+      caption: request.caption,
+    };
+    return this.whatsapp.sendMessage(
+      this.ensureSuffix(request.chatId),
+      media,
+      options,
+    );
   }
 
-  sendFile(request: MessageFileRequest) {
-    throw new AvailableInPlusVersion();
+  async sendFile(request: MessageFileRequest) {
+    const media = await this.buildMessageMedia(request.file);
+    const options = {
+      ...this.getMessageOptions(request),
+      caption: request.caption,
+      sendMediaAsDocument: true,
+    };
+    return this.whatsapp.sendMessage(
+      this.ensureSuffix(request.chatId),
+      media,
+      options,
+    );
   }
 
-  sendVoice(request: MessageVoiceRequest) {
-    throw new AvailableInPlusVersion();
+  async sendVoice(request: MessageVoiceRequest) {
+    const media = await this.buildMessageMedia(request.file);
+    const options = {
+      ...this.getMessageOptions(request),
+      sendAudioAsVoice: true,
+    };
+    return this.whatsapp.sendMessage(
+      this.ensureSuffix(request.chatId),
+      media,
+      options,
+    );
   }
 
   sendButtonsReply(request: MessageButtonReply) {
     throw new AvailableInPlusVersion();
+  }
+
+  private isBinaryMediaFile(
+    file: UploadableMedia,
+  ): file is BinaryFile | VoiceBinaryFile {
+    return 'data' in file;
+  }
+
+  private isRemoteMediaFile(
+    file: UploadableMedia,
+  ): file is RemoteFile | VoiceRemoteFile {
+    return 'url' in file;
+  }
+
+  private sanitizeBase64(data: string): string {
+    const commaIndex = data.indexOf(',');
+    if (commaIndex >= 0) {
+      return data.slice(commaIndex + 1);
+    }
+    return data;
+  }
+
+  private resolveMimetype(file: UploadableMedia): string {
+    return file.mimetype || 'application/octet-stream';
+  }
+
+  private resolveFilename(file: UploadableMedia): string | undefined {
+    if ('filename' in file && file.filename) {
+      return file.filename;
+    }
+    return undefined;
+  }
+
+  private async buildMessageMedia(
+    file: UploadableMedia | undefined,
+  ): Promise<MessageMedia> {
+    if (!file) {
+      throw new UnprocessableEntityException('File payload is required');
+    }
+
+    const mimetype = this.resolveMimetype(file);
+    const filename = this.resolveFilename(file);
+
+    if (this.isBinaryMediaFile(file)) {
+      return new MessageMedia(
+        mimetype,
+        this.sanitizeBase64(file.data),
+        filename,
+      );
+    }
+
+    if (this.isRemoteMediaFile(file)) {
+      const buffer = await this.fetch(file.url);
+      return new MessageMedia(mimetype, buffer.toString('base64'), filename);
+    }
+
+    throw new UnprocessableEntityException(
+      'File must include either data or url content.',
+    );
   }
 
   async sendLocation(request: MessageLocationRequest) {
